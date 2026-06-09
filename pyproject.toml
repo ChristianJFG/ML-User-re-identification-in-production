@@ -1,17 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/catch_joe"]
+
 [project]
 name = "catch-joe"
 version = "0.1.0"
-description = "Add your description here"
+description = "Target-user detection from web session data"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "catboost>=1.2",
     "ipykernel>=7.2.0",
+    "lightgbm>=4.0",
     "matplotlib>=3.10.9",
     "mlflow>=3.13.0",
     "numpy>=2.4.6",
     "pandas>=2.3.3",
     "scikit-learn>=1.9.0",
+    "scipy>=1.11",
     "seaborn>=0.13.2",
+    "torch>=2.0",
 ]
 
 [dependency-groups]
