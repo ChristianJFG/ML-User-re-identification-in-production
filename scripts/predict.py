@@ -1,20 +1,17 @@
 """Production inference script — load a trained MLflow model and score sessions.
 
-Usage examples:
-    # Tree / TF-IDF model
-    uv run python scripts/predict.py \\
-        --run-id  <mlflow_run_id> \\
-        --model-type  tree \\
-        --data-path   data/raw/verify.json \\
-        --output-path data/processed/predictions.csv
+By default loads the @production model from the registry (run promote.py first).
+Pass --run-id and --model-type to target a specific run instead.
 
-    # Siamese model
+Usage examples:
+    # Use the registered @production model (standalone — no run-id needed)
+    uv run python scripts/predict.py --data-path data/raw/verify.json
+
+    # Target a specific run
     uv run python scripts/predict.py \\
-        --run-id  <mlflow_run_id> \\
-        --model-type  siamese \\
-        --data-path   data/raw/verify.json \\
-        --target-user-id 0 \\
-        --output-path data/processed/predictions.csv
+        --run-id     <mlflow_run_id> \\
+        --model-type tree \\
+        --data-path  data/raw/verify.json
 """
 from __future__ import annotations
 
@@ -47,21 +44,26 @@ logger = logging.getLogger(__name__)
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+REGISTRY_MODEL_NAME = "catch_joe_detector"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Run inference using a trained MLflow model."
     )
-    p.add_argument("--run-id", required=True,
-                   help="MLflow run ID that contains the trained model and artifacts.")
-    p.add_argument("--model-type", required=True, choices=["tree", "tfidf", "siamese"],
-                   help="Type of model stored in the run.")
+    p.add_argument("--run-id", default=None,
+                   help="MLflow run ID. Omit to load the @production registered model.")
+    p.add_argument("--model-type", default=None, choices=["tree", "tfidf", "siamese"],
+                   help="Model type. Auto-detected from registry when --run-id is omitted.")
     p.add_argument("--data-path", required=True,
                    help="Path to JSON file with sessions to score.")
     p.add_argument("--target-user-id", type=int, default=None,
                    help="[siamese only] Target user ID whose embeddings to load "
                         "from the run artifacts.")
-    p.add_argument("--output-path", default="predictions.csv",
-                   help="Output CSV path (default: predictions.csv).")
+    p.add_argument("--model-name", default=REGISTRY_MODEL_NAME,
+                   help=f"Registered model name (default: {REGISTRY_MODEL_NAME}).")
+    p.add_argument("--output-path", default="result.csv",
+                   help="Output CSV path (default: result.csv).")
     p.add_argument("--has-user-id", action="store_true",
                    help="Flag if the data file contains a user_id column.")
     return p
@@ -155,11 +157,46 @@ def predict_siamese(run_id: str, df: pd.DataFrame) -> np.ndarray:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _resolve_run_id_and_model_type(args) -> tuple[str, str]:
+    """Return (run_id, model_type), resolving from the registry when not supplied."""
+    import mlflow
+    if args.run_id and args.model_type:
+        return args.run_id, args.model_type
+
+    client = mlflow.tracking.MlflowClient()
+    try:
+        mv = client.get_model_version_by_alias(args.model_name, "production")
+    except Exception as exc:
+        logger.error(
+            "Could not load @production from registry '%s': %s. "
+            "Run promote.py first, or pass --run-id and --model-type.",
+            args.model_name, exc,
+        )
+        sys.exit(1)
+
+    run_id     = mv.tags.get("run_id") or mv.run_id
+    model_type = mv.tags.get("model_type")
+    if not model_type:
+        logger.error(
+            "Registry version %s has no 'model_type' tag. Re-run promote.py.",
+            mv.version,
+        )
+        sys.exit(1)
+
+    logger.info(
+        "Loaded @production from registry: model=%s  version=%s  model_type=%s  run_id=%s",
+        args.model_name, mv.version, model_type, run_id,
+    )
+    return run_id, model_type
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
     import mlflow
     mlflow.set_tracking_uri(f"sqlite:///{REPO_ROOT}/mlflow.db")
+
+    run_id, model_type = _resolve_run_id_and_model_type(args)
 
     data_path = Path(args.data_path)
     if not data_path.is_absolute():
@@ -171,31 +208,29 @@ def main() -> None:
     df = extract_session_stats(df)
 
     logger.info("Loaded %d sessions", len(df))
-
-    logger.info("Running inference with model_type=%s  run_id=%s",
-                args.model_type, args.run_id)
+    logger.info("Running inference with model_type=%s  run_id=%s", model_type, run_id)
 
     dispatch = {
-        "tree":    predict_tree,
-        "tfidf":   predict_tfidf,
-        "siamese": predict_siamese,
+        "tree":       predict_tree,
+        "tfidf":      predict_tfidf,
+        "tfidf_lr":   predict_tfidf,
+        "siamese":    predict_siamese,
+        "catboost":   predict_tree,
     }
-    scores = dispatch[args.model_type](args.run_id, df)
+    if model_type not in dispatch:
+        logger.error("Unknown model_type '%s'. Expected one of: %s", model_type, list(dispatch))
+        sys.exit(1)
 
-    output = df.copy()
-    output["score"] = scores
-    output["predicted_target"] = (scores >= 0.5).astype(int)
-
-    # Drop list columns (not CSV-serialisable)
-    for col in ["sites_visited", "site_lengths"]:
-        if col in output.columns:
-            output = output.drop(columns=[col])
+    scores = dispatch[model_type](run_id, df)
+    labels = (scores >= 0.5).astype(int)
 
     out_path = Path(args.output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    output.to_csv(out_path, index=False)
-    logger.info("Predictions saved to %s  (n=%d, n_target=%d)",
-                out_path, len(output), int(output["predicted_target"].sum()))
+    pd.DataFrame({"predicted_label": labels}).to_csv(out_path, index=False)
+    logger.info(
+        "result.csv saved to %s  (n=%d, n_joe=%d, n_not_joe=%d)",
+        out_path, len(labels), int((labels == 0).sum()), int((labels == 1).sum()),
+    )
 
 
 if __name__ == "__main__":
