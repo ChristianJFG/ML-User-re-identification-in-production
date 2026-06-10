@@ -17,11 +17,16 @@ catch_joe/
 │   ├── train.py       ← production training entrypoint
 │   ├── promote.py     ← register best run → MLflow Model Registry @production
 │   └── predict.py     ← inference on new sessions → result.csv
-└── src/catch_joe/
-    ├── data.py        ← loading, schema, target creation, splits
-    ├── features.py    ← site indicators, TF-IDF, metadata preprocessing
-    ├── evaluation.py  ← metrics, plots, MLflow logging helper
-    └── modeling.py    ← CatBoost, LightGBM, TF-IDF+LR, Siamese encoder
+├── src/catch_joe/
+│   ├── data.py        ← loading, schema, target creation, splits
+│   ├── features.py    ← site indicators, TF-IDF, metadata preprocessing
+│   ├── evaluation.py  ← metrics, plots, MLflow logging helper
+│   └── modeling.py    ← CatBoost, LightGBM, TF-IDF+LR, Siamese encoder
+└── tests/
+    ├── conftest.py         ← shared fixtures (synthetic session data)
+    ├── test_data.py        ← load_sessions, validate_schema, splits, create_target
+    ├── test_features.py    ← session stats, top-K domains, site indicators
+    └── test_evaluation.py  ← metrics computation
 ```
 
 ---
@@ -36,6 +41,18 @@ uv sync
 # Verify the package imports correctly
 uv run python -c "from catch_joe.data import load_sessions; print('OK')"
 ```
+
+---
+
+## Tests
+
+```bash
+# Run the full test suite (no dataset required — uses synthetic fixtures)
+uv run pytest tests/ -v
+```
+
+60 unit tests covering `data.py`, `features.py`, and `evaluation.py`.
+Tests run in ~25 seconds and have no external dependencies.
 
 ---
 
