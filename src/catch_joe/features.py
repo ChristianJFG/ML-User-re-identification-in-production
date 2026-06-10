@@ -182,7 +182,7 @@ def build_tfidf_lr_pipeline(
     """Build a complete sklearn Pipeline ready to fit on a raw session DataFrame.
 
     Steps:
-        features : SessionFeatureTransformer → sparse CSR matrix
+        features : SessionFeatureTransformer → sparse CSR matrix (Compressed Sparse Row matrix)
         clf      : LogisticRegression(class_weight='balanced')
     """
     return Pipeline([
