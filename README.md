@@ -15,7 +15,8 @@ catch_joe/
 │   └── catch_joe_ml.ipynb        ← ML experiment (all three models)
 ├── scripts/
 │   ├── train.py       ← production training entrypoint
-│   └── predict.py     ← inference on new sessions
+│   ├── promote.py     ← register best run → MLflow Model Registry @production
+│   └── predict.py     ← inference on new sessions → result.csv
 └── src/catch_joe/
     ├── data.py        ← loading, schema, target creation, splits
     ├── features.py    ← site indicators, TF-IDF, metadata preprocessing
@@ -95,28 +96,56 @@ uv run python scripts/train.py --help
 
 ---
 
-## Inference on new sessions
+## Model Registry & promotion
+
+After training, promote the best run (ranked by `pr_auc`) to the Model Registry:
 
 ```bash
-# Tree or TF-IDF model
-uv run python scripts/predict.py \
-    --run-id   <mlflow_run_id> \
-    --model-type tree \
-    --data-path  data/raw/verify.json \
-    --output-path data/processed/predictions.csv
-
-# Siamese model (needs --target-user-id to load stored target embeddings)
-uv run python scripts/predict.py \
-    --run-id   <mlflow_run_id> \
-    --model-type siamese \
-    --data-path  data/raw/verify.json \
-    --target-user-id 0 \
-    --output-path data/processed/predictions.csv
+uv run python scripts/promote.py
 ```
 
-Output CSV contains one row per session with columns:
-- `score` — continuous detection probability [0, 1]
-- `predicted_target` — binary prediction at threshold 0.5
+This registers the winning model as `catch_joe_detector` and sets the `@production`
+alias that `predict.py` uses by default. Options:
+
+```
+uv run python scripts/promote.py --help
+  --experiment-name   MLflow experiment to search (default: catch_joe_detection)
+  --model-name        Registered model name   (default: catch_joe_detector)
+  --metric            Ranking metric          (default: pr_auc)
+```
+
+Registered models and their versions are visible in the MLflow UI under the
+**Models** tab at `http://localhost:5001`.
+
+---
+
+## Inference on new sessions
+
+### Standalone — uses @production model (recommended)
+
+```bash
+# Promote first (once), then predict any time without a run-id
+uv run python scripts/promote.py
+uv run python scripts/predict.py --data-path data/raw/verify.json
+# → writes result.csv  (one predicted label per line: 0 = Joe, 1 = not Joe)
+```
+
+### Target a specific run
+
+```bash
+uv run python scripts/predict.py \
+    --run-id     <mlflow_run_id> \
+    --model-type tree \
+    --data-path  data/raw/verify.json
+```
+
+Output `result.csv` contains a single column `predicted_label`:
+- `0` — session belongs to Joe
+- `1` — session does not belong to Joe
+
+Override the output path with `--output-path <path>`.
+
+Full CLI reference: `uv run python scripts/predict.py --help`
 
 ---
 
